@@ -126,18 +126,22 @@ def main() -> None:
     """
     Demo tool for generating annotated screenshot deliverables.
 
+    Runs the full cascaded two-stage grounding pipeline for each position:
+      Stage 1 — coarse region on full screenshot
+      Stage 2 — precise localisation on the cropped & upscaled region
+    Both stages are annotated on the saved image so you can see exactly
+    what the model did at each step.
+
     Usage:
-        uv run demo
+        uv run python screenshot.py
 
-    Move the Notepad icon to the desired position (top-left, center, bottom-right)
-    before running. The tool captures the desktop, runs grounding, annotates the
-    result, and saves it to annotated_screenshots/.
-
+    Move the Notepad icon to the desired position (top-left, center,
+    bottom-right) before pressing ENTER at each prompt.
     Requires GEMINI_API_KEY in .env.
     """
     import os
     from dotenv import load_dotenv
-    from grounding import init_client, find_element
+    from grounding import init_client, find_element, GroundingError, _coarse_pass, _crop_and_upscale, CONFIDENCE_THRESHOLD
 
     load_dotenv()
 
@@ -148,6 +152,7 @@ def main() -> None:
 
     model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
     client = init_client(api_key)
+    target = "Notepad shortcut desktop icon"
     positions = ["top_left", "center", "bottom_right"]
 
     for position in positions:
@@ -156,25 +161,65 @@ def main() -> None:
             f"then press ENTER to capture..."
         )
 
-        print(f"  Capturing desktop...")
+        print("  Capturing desktop...")
         screenshot = capture_desktop()
 
-        print(f"  Grounding Notepad icon...")
-        coords = find_element(client, model, screenshot, "Notepad shortcut desktop icon")
+        # ── Stage 1: coarse pass ──────────────────────────────────────────
+        print("  Stage 1: coarse grounding on full screenshot...")
+        coarse = _coarse_pass(client, model, screenshot, target)
+        coarse_conf = coarse["confidence"] if coarse else 0.0
 
-        if coords is None:
-            print(f"  WARNING: Could not detect Notepad icon for position '{position}'. Skipping.")
+        if coarse and coarse["found"] and coarse_conf >= CONFIDENCE_THRESHOLD:
+            print(f"  Stage 1: box={coarse['box']}  conf={coarse_conf:.2f}  → cropping region")
+            fine_img, (rx1, ry1, rx2, ry2) = _crop_and_upscale(screenshot, coarse["box"])
+            used_crop = True
+        else:
+            print(f"  Stage 1: conf={coarse_conf:.2f} below {CONFIDENCE_THRESHOLD} → Stage 2 on full screen")
+            fine_img = screenshot
+            rx1, ry1, rx2, ry2 = 0, 0, screenshot.width, screenshot.height
+            used_crop = False
+
+        # ── Stage 2: fine pass ────────────────────────────────────────────
+        print("  Stage 2: fine grounding...")
+        try:
+            coords = find_element(client, model, screenshot, target)
+        except GroundingError as exc:
+            print(f"  WARNING: Grounding failed for '{position}': {exc}")
             continue
 
         x, y = coords
-        print(f"  Detected at ({x}, {y})")
 
-        annotated = annotate_detection(
-            screenshot, x, y,
-            label=f"Notepad [{position}]"
+        # ── Annotate both stages on the saved image ───────────────────────
+        annotated = screenshot.copy()
+
+        # Draw the Stage 1 coarse region as a coloured rectangle (blue)
+        if coarse and coarse["found"]:
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(annotated)
+            W, H = screenshot.width, screenshot.height
+            y_min, x_min, y_max, x_max = coarse["box"]
+            bx1 = int(x_min / 1000 * W)
+            by1 = int(y_min / 1000 * H)
+            bx2 = int(x_max / 1000 * W)
+            by2 = int(y_max / 1000 * H)
+            draw.rectangle([bx1, by1, bx2, by2], outline="#4A90D9", width=3)
+            draw.text(
+                (bx1 + 4, by1 + 4),
+                f"Stage 1  conf={coarse_conf:.2f}",
+                fill="#4A90D9",
+            )
+
+        # Draw the Stage 2 precise detection (red crosshair, existing helper)
+        label = (
+            f"Notepad [{position}]  "
+            f"S1={coarse_conf:.2f}  "
+            f"crop={'yes' if used_crop else 'no'}"
         )
+        annotated = annotate_detection(annotated, x, y, label=label)
+
         filename = f"notepad_detected_{position}.png"
         path = save_annotated(annotated, filename)
+        print(f"  Final coords: ({x}, {y})")
         print(f"  Saved: {path}")
 
     print("\n[DEMO] Done. Check annotated_screenshots/ for results.")

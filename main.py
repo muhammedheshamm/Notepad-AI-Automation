@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 
 from api_client import fetch_posts, format_post_content, post_filename
 from automation import launch_notepad, type_text, save_file, close_notepad, is_notepad_running
-from grounding import init_client, find_element, detect_blocking_popup
+from grounding import init_client, find_element, detect_blocking_popup, GroundingError
 from screenshot import capture_desktop
 
 # ---------------------------------------------------------------------------
@@ -135,7 +135,11 @@ def find_and_launch(
     # Gemini grounding (slow path)
     for attempt in range(1, MAX_ICON_FIND_ATTEMPTS + 1):
         log.info("[Post %d] Grounding attempt %d/%d", post_id, attempt, MAX_ICON_FIND_ATTEMPTS)
-        coords = find_element(client, model, capture_desktop(), NOTEPAD_TARGET)
+        try:
+            coords = find_element(client, model, capture_desktop(), NOTEPAD_TARGET)
+        except GroundingError as exc:
+            log.warning("[Post %d] Grounding failed (attempt %d): %s", post_id, attempt, exc)
+            coords = None
 
         if coords is None:
             log.warning("[Post %d] Icon not found (attempt %d)", post_id, attempt)

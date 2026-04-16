@@ -1,17 +1,28 @@
 """
-grounding.py — Visual grounding via Gemini.
+grounding.py — Cascaded visual grounding via Gemini.
 
-Uses Gemini's native bounding box format (0–1000 normalized coordinates).
-Coordinate conversion:
-    pixel_x = (x_1000 / 1000) * image_width
-    pixel_y = (y_1000 / 1000) * image_height
+Implements a two-stage ScreenSeekeR-style search inspired by ScreenSpot-Pro
+(arXiv 2504.07981):
+
+  Stage 1 (coarse) — full screenshot
+    Gemini returns a large bounding box around the target region + confidence.
+
+  Stage 2 (fine) — cropped & upscaled region (or full screen if Stage 1 failed)
+    Gemini returns a precise bounding box + confidence within that crop.
+    Stage 2 coordinates are then mapped back to original pixel space.
+
+Fallback rule:
+  - Stage 1 confidence < CONFIDENCE_THRESHOLD  →  Stage 2 runs on the full screen
+  - Stage 2 confidence < CONFIDENCE_THRESHOLD  →  raises GroundingError
+
+Works for ANY icon or UI element — just pass a plain-English description string.
 """
 
 import json
 import logging
 import re
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from google import genai
 from google.genai import types
@@ -21,28 +32,59 @@ from screenshot import image_to_bytes
 
 log = logging.getLogger(__name__)
 
+CONFIDENCE_THRESHOLD = 0.3   # minimum acceptable confidence for each stage
+
+
+# ---------------------------------------------------------------------------
+# Custom exception
+# ---------------------------------------------------------------------------
+
+class GroundingError(Exception):
+    """Raised when visual grounding cannot locate the target with sufficient confidence."""
+
+
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
 
-_FIND_ELEMENT_PROMPT = """\
-You are a desktop UI automation assistant. Analyze the screenshot below.
+_COARSE_PROMPT = """\
+You are a desktop UI automation assistant.
 
-Your task: find the element described and return a bounding box around it.
+TASK: Find the approximate REGION on the desktop screenshot that contains the target element.
+Return a generously-sized bounding box that covers the entire area where the element could be.
+Also rate your confidence from 0.0 (no idea) to 1.0 (very sure).
 
 Target element: {description}
 
-Return the bounding box using NORMALIZED coordinates in the range 0 to 1000:
-- 0 = top/left edge of the image
-- 1000 = bottom/right edge of the image
+NORMALIZED coordinates — 0 = top/left edge, 1000 = bottom/right edge.
 
 Return ONLY a JSON object (no markdown, no explanation):
 
 If found:
-{{"found": true, "box": [y_min, x_min, y_max, x_max]}}
+{{"found": true, "box": [y_min, x_min, y_max, x_max], "confidence": <0.0-1.0>}}
 
 If NOT found:
-{{"found": false, "box": null}}
+{{"found": false, "confidence": 0.0}}
+"""
+
+_FINE_PROMPT = """\
+You are a desktop UI automation assistant.
+
+TASK: Find the PRECISE location of the target element in this image.
+This image may be a zoomed-in crop of a larger screenshot — treat it as-is.
+Also rate your confidence from 0.0 (no idea) to 1.0 (very sure).
+
+Target element: {description}
+
+NORMALIZED coordinates — 0 = top/left edge, 1000 = bottom/right edge.
+
+Return ONLY a JSON object (no markdown, no explanation):
+
+If found:
+{{"found": true, "box": [y_min, x_min, y_max, x_max], "confidence": <0.0-1.0>}}
+
+If NOT found:
+{{"found": false, "confidence": 0.0}}
 """
 
 _POPUP_DETECTION_PROMPT = """\
@@ -92,38 +134,85 @@ def find_element(
     model: str,
     screenshot: Image.Image,
     description: str,
-) -> Optional[tuple[int, int]]:
+) -> Tuple[int, int]:
     """
-    Locate a UI element by natural-language description.
-    Returns (x, y) center pixel coordinates, or None if not found.
+    Locate any UI element by plain-English description using cascaded grounding.
+
+    Stage 1: coarse pass on the full screenshot.
+    Stage 2: fine pass on the cropped region (or full screen if Stage 1 is uncertain).
+
+    Args:
+        client:      Gemini client from init_client().
+        model:       Model name string.
+        screenshot:  Full desktop screenshot as a PIL Image.
+        description: Plain-English description of the target, e.g. "Notepad icon"
+                     or "Chrome browser shortcut" — any string works.
+
+    Returns:
+        (x, y) center pixel coordinates in the original screenshot space.
+
+    Raises:
+        GroundingError: If Stage 2 returns no result or confidence < CONFIDENCE_THRESHOLD.
     """
-    log.info("Grounding: '%s'", description)
-    prompt = _FIND_ELEMENT_PROMPT.format(description=description)
-    raw = _query_model(client, model, screenshot, prompt)
-    if raw is None:
-        return None
+    log.info("Cascaded grounding: '%s'", description)
 
-    parsed = _parse_json(raw)
-    if parsed is None:
-        log.warning("Could not parse grounding response: %s", raw[:300])
-        return None
+    # ------------------------------------------------------------------
+    # Stage 1 — coarse localisation on full screenshot
+    # ------------------------------------------------------------------
+    log.debug("Stage 1: coarse pass on full screenshot")
+    coarse = _coarse_pass(client, model, screenshot, description)
+    coarse_conf = coarse["confidence"] if coarse else 0.0
 
-    if not parsed.get("found"):
-        log.info("Element not found by model")
-        return None
+    if coarse and coarse["found"] and coarse_conf >= CONFIDENCE_THRESHOLD:
+        log.info("Stage 1: box=%s conf=%.2f — cropping region for Stage 2",
+                 coarse["box"], coarse_conf)
+        fine_img, (rx1, ry1, rx2, ry2) = _crop_and_upscale(screenshot, coarse["box"])
+    else:
+        log.info("Stage 1: conf=%.2f below %.2f — Stage 2 will run on full screen",
+                 coarse_conf, CONFIDENCE_THRESHOLD)
+        fine_img = screenshot
+        rx1, ry1, rx2, ry2 = 0, 0, screenshot.width, screenshot.height
 
-    box = parsed.get("box")
-    if not box or len(box) != 4:
-        log.warning("Model returned found=true but invalid box: %s", box)
-        return None
+    # ------------------------------------------------------------------
+    # Stage 2 — fine localisation
+    # ------------------------------------------------------------------
+    log.debug("Stage 2: fine pass")
+    fine = _fine_pass(client, model, fine_img, description)
 
-    y_min, x_min, y_max, x_max = box
-    w, h = screenshot.width, screenshot.height
-    cx = max(0, min(int(((x_min + x_max) / 2) / 1000 * w), w - 1))
-    cy = max(0, min(int(((y_min + y_max) / 2) / 1000 * h), h - 1))
+    if fine is None or not fine.get("found"):
+        raise GroundingError(
+            f"'{description}': Stage 2 could not locate the element. "
+            "Make sure the icon is visible on the desktop."
+        )
 
-    log.info("Box [%d, %d, %d, %d] → center pixel (%d, %d)", y_min, x_min, y_max, x_max, cx, cy)
-    return (cx, cy)
+    fine_conf = float(fine.get("confidence", 0.0))
+    if fine_conf < CONFIDENCE_THRESHOLD:
+        raise GroundingError(
+            f"'{description}': Stage 2 confidence {fine_conf:.2f} is below "
+            f"the threshold {CONFIDENCE_THRESHOLD}. The element may be partially "
+            "hidden, too small, or not present."
+        )
+
+    # ------------------------------------------------------------------
+    # Map Stage 2 coordinates back to original pixel space
+    # ------------------------------------------------------------------
+    y_min, x_min, y_max, x_max = fine["box"]
+    cx_norm = (x_min + x_max) / 2   # center in 0-1000 space within fine_img
+    cy_norm = (y_min + y_max) / 2
+
+    region_w = rx2 - rx1
+    region_h = ry2 - ry1
+
+    full_x = rx1 + int(cx_norm / 1000 * region_w)
+    full_y = ry1 + int(cy_norm / 1000 * region_h)
+    full_x = max(0, min(full_x, screenshot.width - 1))
+    full_y = max(0, min(full_y, screenshot.height - 1))
+
+    log.info(
+        "Grounding done: stage1_conf=%.2f  stage2_conf=%.2f → pixel (%d, %d)",
+        coarse_conf, fine_conf, full_x, full_y,
+    )
+    return (full_x, full_y)
 
 
 def detect_blocking_popup(
@@ -132,8 +221,8 @@ def detect_blocking_popup(
     screenshot: Image.Image,
 ) -> Optional[Dict]:
     """
-    Detect any unexpected popup on screen.
-    Returns a dict with dismiss coordinates and action, or None if no popup.
+    Detect any unexpected system popup/dialog on screen.
+    Returns a dict with dismiss coordinates and action, or None if nothing found.
     """
     raw = _query_model(client, model, screenshot, _POPUP_DETECTION_PROMPT)
     if raw is None:
@@ -167,7 +256,89 @@ def detect_blocking_popup(
 
 
 # ---------------------------------------------------------------------------
-# Private helpers
+# Private — cascaded grounding helpers
+# ---------------------------------------------------------------------------
+
+def _coarse_pass(
+    client: genai.Client,
+    model: str,
+    screenshot: Image.Image,
+    description: str,
+) -> Optional[Dict]:
+    """Run Stage 1: return {'found', 'box', 'confidence'} or None on error."""
+    prompt = _COARSE_PROMPT.format(description=description)
+    raw = _query_model(client, model, screenshot, prompt)
+    if raw is None:
+        return None
+    parsed = _parse_json(raw)
+    if parsed is None:
+        return None
+    confidence = float(parsed.get("confidence", 0.0))
+    if not parsed.get("found") or not parsed.get("box"):
+        return {"found": False, "box": None, "confidence": confidence}
+    return {"found": True, "box": parsed["box"], "confidence": confidence}
+
+
+def _fine_pass(
+    client: genai.Client,
+    model: str,
+    image: Image.Image,
+    description: str,
+) -> Optional[Dict]:
+    """Run Stage 2: return {'found', 'box', 'confidence'} or None on error."""
+    prompt = _FINE_PROMPT.format(description=description)
+    raw = _query_model(client, model, image, prompt)
+    if raw is None:
+        return None
+    parsed = _parse_json(raw)
+    if parsed is None:
+        return None
+    confidence = float(parsed.get("confidence", 0.0))
+    if not parsed.get("found") or not parsed.get("box"):
+        return {"found": False, "box": None, "confidence": confidence}
+    return {"found": True, "box": parsed["box"], "confidence": confidence}
+
+
+def _crop_and_upscale(
+    screenshot: Image.Image,
+    box: list,
+) -> Tuple[Image.Image, Tuple[int, int, int, int]]:
+    """
+    Crop the coarse region from the screenshot (with 15% padding) and
+    upscale it back to the original image dimensions.
+
+    Upscaling ensures the model receives the same input size in Stage 2,
+    and makes small elements appear much larger and easier to localise.
+
+    Returns:
+        (upscaled_crop, (px1, py1, px2, py2)) — pixel coords of the crop
+        in the original screenshot (used to map Stage 2 coords back).
+    """
+    y_min, x_min, y_max, x_max = box
+    W, H = screenshot.width, screenshot.height
+
+    px1 = int(x_min / 1000 * W)
+    py1 = int(y_min / 1000 * H)
+    px2 = int(x_max / 1000 * W)
+    py2 = int(y_max / 1000 * H)
+
+    # 15% padding so we don't accidentally clip the target
+    pad_x = max(30, int((px2 - px1) * 0.15))
+    pad_y = max(30, int((py2 - py1) * 0.15))
+    px1 = max(0, px1 - pad_x)
+    py1 = max(0, py1 - pad_y)
+    px2 = min(W, px2 + pad_x)
+    py2 = min(H, py2 + pad_y)
+
+    crop = screenshot.crop((px1, py1, px2, py2))
+    upscaled = crop.resize((W, H), Image.LANCZOS)
+
+    log.debug("Crop region: (%d,%d)–(%d,%d), upscaled to %dx%d", px1, py1, px2, py2, W, H)
+    return upscaled, (px1, py1, px2, py2)
+
+
+# ---------------------------------------------------------------------------
+# Private — model I/O helpers
 # ---------------------------------------------------------------------------
 
 def _query_model(
