@@ -144,8 +144,8 @@ def main() -> None:
     """
     import os
     from dotenv import load_dotenv
-    from grounding import init_client, find_element, GroundingError, _coarse_pass, _crop_and_upscale, CONFIDENCE_THRESHOLD
-    from fallback import find_with_botcity
+    from src.grounding import init_client, find_element, GroundingError, _coarse_pass, _crop_and_upscale, CONFIDENCE_THRESHOLD
+    from src.fallback import find_with_botcity
 
     load_dotenv()
 

@@ -40,19 +40,21 @@ After the first successful grounding, the icon's (x, y) coordinates are cached a
 
 ```
 tjm-project/
-├── main.py              # Orchestrator / entry point
-├── grounding.py         # Cascaded Gemini visual grounding engine
-├── automation.py        # Notepad control (launch, type, save, close)
-├── api_client.py        # JSONPlaceholder API client with fallback
-├── fallback.py          # BotCity template-matching fallback
-├── screenshot.py        # mss capture + PIL annotation + demo tool
-├── pyproject.toml       # uv project config + dependencies
-├── requirements.txt     # Pinned dependency lockfile (pip-compatible)
-├── .python-version      # Python 3.11
-├── .env.example         # API key template
+├── main.py                  # Orchestrator / entry point
+├── screenshot.py            # mss capture + PIL annotation + demo tool
+├── src/                     # Core library modules
+│   ├── __init__.py
+│   ├── grounding.py         # Cascaded Gemini visual grounding engine
+│   ├── automation.py        # Notepad control (launch, type, save, close)
+│   ├── api_client.py        # JSONPlaceholder API client with fallback
+│   └── fallback.py          # BotCity template-matching fallback
+├── assets/                  # Reference images for BotCity template matching
+│   └── notepad_icon.png     # Clean PNG crop of the Notepad icon (add manually)
+├── pyproject.toml           # uv project config + dependencies
+├── requirements.txt         # Pinned dependency lockfile (pip-compatible)
+├── .python-version          # Python 3.11
+├── .env.example             # API key template
 ├── .gitignore
-├── assets/              # Reference images for BotCity template matching
-│   └── notepad_icon.png # Clean PNG crop of the Notepad icon (add manually)
 └── annotated_screenshots/   # Deliverable: annotated detection screenshots
 ```
 

@@ -24,10 +24,10 @@ from typing import Dict, Optional
 import pyautogui
 from dotenv import load_dotenv
 
-from api_client import fetch_posts, format_post_content, post_filename
-from automation import launch_notepad, type_text, save_file, close_notepad, is_notepad_running
-from fallback import find_with_botcity
-from grounding import init_client, find_element, detect_blocking_popup, GroundingError
+from src.api_client import fetch_posts, format_post_content, post_filename
+from src.automation import launch_notepad, type_text, save_file, close_notepad, is_notepad_running
+from src.fallback import find_with_botcity
+from src.grounding import init_client, find_element, detect_blocking_popup, GroundingError
 from screenshot import capture_desktop
 
 # ---------------------------------------------------------------------------
