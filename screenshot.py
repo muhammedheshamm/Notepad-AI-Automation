@@ -187,7 +187,7 @@ def main() -> None:
         "- A wrong detection is far worse than returning found: false — prefer caution. "
     )
     REFERENCE_IMAGE = Path(__file__).parent / "assets" / "notepad_icon.png"
-    BOTCITY_FIRST: bool = True   # set True to try template matching before AI
+    BOTCITY_FIRST: bool = False   # set True to try template matching before AI
 
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
