@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 
 from api_client import fetch_posts, format_post_content, post_filename
 from automation import launch_notepad, type_text, save_file, close_notepad, is_notepad_running
+from fallback import find_with_botcity
 from grounding import init_client, find_element, detect_blocking_popup, GroundingError
 from screenshot import capture_desktop
 
@@ -34,9 +35,20 @@ from screenshot import capture_desktop
 # ---------------------------------------------------------------------------
 
 MAX_ICON_FIND_ATTEMPTS  = 3    # retries when Gemini cannot locate the icon
-ICON_RETRY_DELAY        = 1.5  # seconds between icon-find retries
+ICON_RETRY_DELAY        = 1  # seconds between icon-find retries
 MAX_POPUP_DISMISS_CYCLES = 2   # max Gemini popup-dismiss loops per step
-NOTEPAD_TARGET = "Notepad shortcut desktop icon"
+NOTEPAD_TARGET = (
+    "Find the Windows Notepad application shortcut icon on the desktop. "
+    "Its graphic looks exactly like this: a white or cream-coloured notepad/paper "
+    "with a spiral coil binding running along the TOP edge of the page, "
+    "several horizontal blue ruled lines across the page body, "
+    "and a slight dog-ear fold on one corner. "
+    "A small blue Windows shortcut arrow may appear in the bottom-left of the icon. "
+    "The icon may be partially obscured by other windows — detect it even if only "
+    "part of the notepad graphic is visible. "
+    "Do NOT rely on the text label beneath the icon to identify it — the label may "
+    "say anything. Identify purely by the spiral-top-bound lined notepad graphic."
+)
 
 # No-AI mode: set to (x, y) to skip all Gemini calls and use a fixed position.
 # used for testing purposes
@@ -44,6 +56,15 @@ NOTEPAD_TARGET = "Notepad shortcut desktop icon"
 FIXED_ICON: Optional[tuple[int, int]] = None   # ← adjust or set to None
 
 PROJECT_DIR = Path(__file__).parent
+
+# Reference image used by the BotCity template-matching fallback.
+# Place a clean PNG crop of the icon at assets/notepad_icon.png.
+REFERENCE_IMAGE = PROJECT_DIR / "assets" / "notepad_icon.png"
+
+# Set to True to try BotCity template matching BEFORE Gemini AI grounding.
+# Useful when the reference image is reliable and you want to save API calls.
+# If BotCity fails, the flow still falls through to Gemini grounding.
+BOTCITY_FIRST: bool = False
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -113,7 +134,9 @@ def find_and_launch(
     Order of attempts:
       1. Fixed coords (no-AI mode)
       2. Cached coords from previous post (no extra API call)
-      3. Gemini grounding (up to MAX_ICON_FIND_ATTEMPTS times)
+      3. BotCity template matching   ← only if BOTCITY_FIRST=True
+      4. Gemini grounding (up to MAX_ICON_FIND_ATTEMPTS times)
+      5. BotCity template matching   ← always as last-resort fallback
     """
     # No-AI mode
     if FIXED_ICON is not None:
@@ -132,9 +155,23 @@ def find_and_launch(
             return True, cached_coords
         log.warning("[Post %d] Cached coords failed — re-grounding", post_id)
 
+    # BotCity-first mode: try template matching before Gemini
+    if BOTCITY_FIRST:
+        log.info("[Post %d] BotCity-first mode — trying template matching", post_id)
+        fb_coords = find_with_botcity(REFERENCE_IMAGE)
+        if fb_coords is not None:
+            fx, fy = fb_coords
+            log.info("[Post %d] BotCity found icon at (%d, %d) — launching", post_id, fx, fy)
+            if launch_notepad(fx, fy):
+                return True, (fx, fy)
+            log.warning("[Post %d] BotCity coords did not open Notepad — falling back to AI", post_id)
+        else:
+            log.warning("[Post %d] BotCity-first: no match — falling back to AI grounding", post_id)
+
     # Gemini grounding (slow path)
+    coords: Optional[tuple[int, int]] = None
     for attempt in range(1, MAX_ICON_FIND_ATTEMPTS + 1):
-        log.info("[Post %d] Grounding attempt %d/%d", post_id, attempt, MAX_ICON_FIND_ATTEMPTS)
+        log.info("[Post %d] AI grounding attempt %d/%d", post_id, attempt, MAX_ICON_FIND_ATTEMPTS)
         try:
             coords = find_element(client, model, capture_desktop(), NOTEPAD_TARGET)
         except GroundingError as exc:
@@ -142,18 +179,34 @@ def find_and_launch(
             coords = None
 
         if coords is None:
-            log.warning("[Post %d] Icon not found (attempt %d)", post_id, attempt)
             if attempt < MAX_ICON_FIND_ATTEMPTS:
                 time.sleep(ICON_RETRY_DELAY)
             continue
 
         x, y = coords
-        log.info("[Post %d] Icon at (%d, %d) — launching", post_id, x, y)
+        log.info("[Post %d] AI found icon at (%d, %d) — launching", post_id, x, y)
         if launch_notepad(x, y):
             return True, (x, y)
 
         log.warning("[Post %d] Click did not open Notepad (attempt %d)", post_id, attempt)
+        coords = None
         time.sleep(ICON_RETRY_DELAY)
+
+    # ── BotCity template-matching fallback ─────────────────────────────────
+    log.warning("[Post %d] AI grounding exhausted — trying BotCity template fallback", post_id)
+    fb_coords = find_with_botcity(REFERENCE_IMAGE)
+    if fb_coords is not None:
+        fx, fy = fb_coords
+        log.info("[Post %d] BotCity found icon at (%d, %d) — launching", post_id, fx, fy)
+        if launch_notepad(fx, fy):
+            return True, (fx, fy)
+        log.error("[Post %d] BotCity coords did not open Notepad", post_id)
+    else:
+        log.error(
+            "[Post %d] BotCity fallback also failed. "
+            "Make sure assets/notepad_icon.png exists and is a clean crop of the icon.",
+            post_id,
+        )
 
     log.error("[Post %d] Could not launch Notepad", post_id)
     return False, cached_coords
@@ -228,6 +281,8 @@ def main() -> None:
 
     if FIXED_ICON is not None:
         log.info("No-AI mode — fixed icon coords %s (zero API calls)", FIXED_ICON)
+    elif BOTCITY_FIRST:
+        log.info("BotCity-first mode — template matching before AI (model: %s)", model)
     else:
         log.info("AI mode — Gemini model: %s", model)
 

@@ -25,7 +25,6 @@ annotated_screenshots/
 post_*.txt
 
 # Temporary screenshots
-*.png
 !annotated_screenshots/*.png
 
 # IDE
