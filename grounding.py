@@ -52,9 +52,17 @@ You are a desktop UI automation assistant.
 
 TASK: Find the approximate REGION on the desktop screenshot that contains the target element.
 Return a generously-sized bounding box that covers the entire area where the element could be.
-Also rate your confidence from 0.0 (no idea) to 1.0 (very sure).
 
 Target element: {description}
+
+STRICT RULES — READ CAREFULLY:
+- You MUST visually confirm the element's distinctive icon appearance before returning found: true
+- If you are guessing or inferring based on position/habit, return found: false
+- If the target element is not clearly visible in the screenshot, return found: false
+- Do NOT substitute a similar or nearby element
+- Confidence of 0.9 or above means you can clearly see the icon's visual appearance with certainty
+- Confidence of 1.0 should be extremely rare — only when absolutely certain
+- When in doubt, return found: false — it is better to say not found than to return wrong coordinates
 
 NORMALIZED coordinates — 0 = top/left edge, 1000 = bottom/right edge.
 
@@ -72,9 +80,18 @@ You are a desktop UI automation assistant.
 
 TASK: Find the PRECISE location of the target element in this image.
 This image may be a zoomed-in crop of a larger screenshot — treat it as-is.
-Also rate your confidence from 0.0 (no idea) to 1.0 (very sure).
 
 Target element: {description}
+
+STRICT RULES — READ CAREFULLY:
+- Before returning coordinates, ask yourself: "Can I clearly and unambiguously see this element's icon?"
+- If the answer is no, or you are unsure, return found: false
+- Do NOT return coordinates for a visually similar element — the icon appearance must be a confident match
+- Do NOT assume the element is present just because the region was cropped around it
+- Confidence of 0.9 or above means you can clearly see the icon graphic with full certainty
+- Confidence of 1.0 is reserved for cases where the element is large, unambiguous, and fully visible
+- A wrong coordinate is far worse than returning found: false — prefer caution
+- If multiple icons are visible, only return the one that best visually matches the target description
 
 NORMALIZED coordinates — 0 = top/left edge, 1000 = bottom/right edge.
 

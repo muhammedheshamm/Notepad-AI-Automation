@@ -152,15 +152,39 @@ def main() -> None:
     # ── Config (mirrors main.py) ──────────────────────────────────────────
     NOTEPAD_TARGET = (
         "Find the Windows Notepad application shortcut icon on the desktop. "
-        "Its graphic looks exactly like this: a white or cream-coloured notepad/paper "
-        "with a spiral coil binding running along the TOP edge of the page, "
-        "several horizontal blue ruled lines across the page body, "
-        "and a slight dog-ear fold on one corner. "
-        "A small blue Windows shortcut arrow may appear in the bottom-left of the icon. "
-        "The icon may be partially obscured by other windows — detect it even if only "
-        "part of the notepad graphic is visible. "
-        "Do NOT rely on the text label beneath the icon to identify it — the label may "
-        "say anything. Identify purely by the spiral-top-bound lined notepad graphic."
+
+        "VISUAL DESCRIPTION — what this icon looks like: "
+        "A realistic 3D-rendered notepad/paper block viewed at a slight angle. "
+        "The overall shape is a near-perfect SQUARE or slightly portrait rectangle — "
+        "NOT a wide landscape rectangle like a folder. "
+
+        "TOP EDGE: A dark grey or black SPIRAL COIL BINDING runs horizontally across "
+        "the very top of the icon — this is the most distinctive feature. "
+        "The coil appears as a series of small dark loops or bumps along the top border. "
+
+        "PAGE BODY: The page surface is off-white, cream, or very light grey. "
+        "Across the page body there are multiple thin HORIZONTAL BLUE RULED LINES, "
+        "evenly spaced, running left to right — like a lined notebook page. "
+        "These lines are light blue, similar to standard ruled notebook paper. "
+
+        "CORNERS: One corner (typically bottom-right or top-right) has a subtle "
+        "dog-ear fold, giving it a realistic paper look. "
+
+        "SHORTCUT ARROW: A small blue-and-white Windows shortcut arrow icon "
+        "may appear overlaid on the bottom-left corner of the icon. "
+
+        "CRITICAL DIFFERENCES FROM FOLDERS: "
+        "- A folder icon is wide/landscape shaped and yellow/golden coloured with a tab on top. "
+        "- This Notepad icon is square shaped, off-white/cream coloured, and has a dark spiral coil on top. "
+        "- A folder has NO lines on its body. This icon has clearly visible blue horizontal ruled lines. "
+        "- A folder has NO spiral coil. This icon always has the coil along the top edge. "
+        "- If you see a yellow or golden icon, it is a folder — do NOT return it. "
+
+        "CONFIDENCE RULES: "
+        "- Only return found: true if you can see the spiral coil AND the blue ruled lines on a square off-white icon. "
+        "- If you see only a square icon without both of these features clearly visible, return found: false. "
+        "- Do NOT rely on the text label beneath the icon to identify it — the label may say anything. "
+        "- A wrong detection is far worse than returning found: false — prefer caution. "
     )
     REFERENCE_IMAGE = Path(__file__).parent / "assets" / "notepad_icon.png"
     BOTCITY_FIRST: bool = False   # set True to try template matching before AI
