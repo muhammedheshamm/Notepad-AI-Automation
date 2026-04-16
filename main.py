@@ -88,7 +88,7 @@ REFERENCE_IMAGE = PROJECT_DIR / "assets" / "notepad_icon.png"
 # Set to True to try BotCity template matching BEFORE Gemini AI grounding.
 # Useful when the reference image is reliable and you want to save API calls.
 # If BotCity fails, the flow still falls through to Gemini grounding.
-BOTCITY_FIRST: bool = False
+BOTCITY_FIRST: bool = True
 
 # ---------------------------------------------------------------------------
 # Logging
