@@ -28,11 +28,19 @@ Stage 2 — Fine (cropped & upscaled region, or full screen)
 
 **Why upscale the crop?** A desktop icon is ~64×64 px on a 1920×1080 screen — only 0.2% of the image. Cropping the Stage 1 region and stretching it back to full resolution makes the target appear ~4× larger, giving the model far more detail to work with.
 
-The same engine handles **unexpected popups**: a screenshot is sent to Gemini asking whether any system dialog is blocking the workflow. If one is found, Gemini returns coordinates to dismiss it — without needing to know what the popup looks like in advance.
+The same engine can handle **unexpected popups** via `detect_blocking_popup()` — see [Popup Dismissal](#popup-dismissal) below.
 
 ### Icon Coordinate Caching
 
 After the first successful grounding, the icon's (x, y) coordinates are cached and reused for all subsequent posts — no API call needed. The cache is cleared only if a launch fails, triggering a fresh grounding pass.
+
+### Popup Dismissal
+
+`grounding.py` includes a `detect_blocking_popup()` function that sends a screenshot to Gemini and asks whether any system dialog box is blocking the workflow. If one is found, Gemini returns the coordinates of its dismiss button (OK / Close / Cancel) along with the recommended action (`click`, `enter`, or `escape`) — without any prior knowledge of what the popup looks like.
+
+The prompt explicitly excludes Notepad and other application windows so only genuine system dialogs (UAC prompts, "File already exists" confirmations, crash reports, etc.) are flagged.
+
+> **Not currently active.** Popup dismissal calls have been disabled in `main.py` to reduce LLM API usage. Each call costs one Gemini request, and in practice the automation runs cleanly without it. To re-enable, call `handle_popups(client, model)` at the desired points in `process_post()` inside `main.py`.
 
 ---
 
@@ -256,7 +264,7 @@ You will be prompted three times (top-left, center, bottom-right). Move the Note
 | Icon not found / grounding error | Retry up to 3× with 1.5s delay; BotCity fallback tried; skip post on all failures |
 | BotCity reference image missing | Warning logged; BotCity step skipped, AI grounding proceeds normally |
 | Notepad doesn't open | 8s timeout on window title check; retry or skip |
-| Unexpected system popup | Gemini detects and dismisses automatically (up to 2 cycles) |
+| Unexpected system popup | `detect_blocking_popup()` is implemented but **disabled by default** to reduce API costs; re-enable via `handle_popups()` in `main.py` |
 | "Save changes?" dialog on close | Tab → Enter ("Don't save"); `taskkill` as last resort |
 | JSONPlaceholder API unavailable | Falls back to 10 generated numbered posts automatically |
 | Gemini API error | Exponential backoff (2 retries); returns `None` / raises on final failure |
